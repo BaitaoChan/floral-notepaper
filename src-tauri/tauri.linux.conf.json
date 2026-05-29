@@ -1,0 +1,13 @@
+{
+  "productName": "floral-notepaper",
+  "bundle": {
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux-desktop-template.hbs"
+      },
+      "rpm": {
+        "desktopTemplate": "linux-desktop-template.hbs"
+      }
+    }
+  }
+}
