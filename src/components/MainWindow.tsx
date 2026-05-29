@@ -8,7 +8,12 @@ import { AboutPanel } from "./AboutPanel";
 import { exportMarkdownNote, importMarkdownNote } from "../features/importExport/api";
 import { MarkdownPreview } from "../features/markdown/MarkdownPreview";
 import { showToast } from "./Toast";
-import { tagPreviewBlocks } from "../features/markdown/scrollSync";
+import {
+  tagPreviewBlocks,
+  measureBlocks,
+  blockIndexAtOffset,
+} from "../features/markdown/scrollSync";
+import type { BlockMeasurement } from "../features/markdown/scrollSync";
 import {
   chooseNotesDirectory,
   getConfig,
@@ -349,7 +354,9 @@ export function MainWindow({
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const windowLabelRef = useRef("main");
   const previewScrollRef = useRef<HTMLDivElement>(null);
-  const isScrollSyncing = useRef(false);
+  const blockMeasurements = useRef<BlockMeasurement[]>([]);
+  const scrollSource = useRef<"editor" | "preview" | null>(null);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const externalFileMtimeRef = useRef<number>(0);
   const lastExternalSaveRef = useRef<number>(0);
   const imageBaseDir = useImageBaseDir();
@@ -1499,12 +1506,15 @@ export function MainWindow({
     };
   }, [isResizingSplit]);
 
-  // Tag rendered preview blocks with data-block-index after each render
+  // Measure block pixel positions + tag preview DOM after content or viewMode changes
   useLayoutEffect(() => {
     if (viewMode !== "split") return;
-    const container = previewScrollRef.current;
-    if (!container) return;
-    tagPreviewBlocks(container);
+    const textarea = contentRef.current;
+    const preview = previewScrollRef.current;
+    if (!textarea || !preview) return;
+
+    blockMeasurements.current = measureBlocks(content, textarea);
+    tagPreviewBlocks(preview);
   }, [content, viewMode]);
 
   // Reset preview scroll on note switch
@@ -1515,32 +1525,46 @@ export function MainWindow({
   }, [selectedId]);
 
   const handleEditorScroll = useCallback(() => {
-    if (viewMode !== "split" || isScrollSyncing.current) return;
+    if (viewMode !== "split") return;
+    // If preview initiated the scroll, don't echo back
+    if (scrollSource.current === "preview") return;
+
     const textarea = contentRef.current;
     const preview = previewScrollRef.current;
     if (!textarea || !preview) return;
 
-    const maxScroll = textarea.scrollHeight - textarea.clientHeight;
-    if (maxScroll <= 0) return;
-    const ratio = Math.min(textarea.scrollTop / maxScroll, 1);
+    // Lock: editor is the active scroll source
+    scrollSource.current = "editor";
+    if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    scrollTimer.current = setTimeout(() => {
+      scrollSource.current = null;
+    }, 150);
 
-    const elements = preview.querySelectorAll<HTMLElement>("[data-block-index]");
-    if (elements.length === 0) return;
+    const measurements = blockMeasurements.current;
+    if (measurements.length === 0) return;
 
-    const targetIdx = Math.min(Math.floor(ratio * elements.length), elements.length - 1);
-    const el = elements[targetIdx];
+    const blockIdx = blockIndexAtOffset(measurements, textarea.scrollTop);
+    const el = preview.querySelector<HTMLElement>(`[data-block-index="${blockIdx}"]`);
     if (!el) return;
 
-    isScrollSyncing.current = true;
     el.scrollIntoView({ block: "start", behavior: "instant" });
-    isScrollSyncing.current = false;
   }, [viewMode]);
 
   const handlePreviewScroll = useCallback(() => {
-    if (viewMode !== "split" || isScrollSyncing.current) return;
+    if (viewMode !== "split") return;
+    // If editor initiated the scroll, don't echo back
+    if (scrollSource.current === "editor") return;
+
     const textarea = contentRef.current;
     const preview = previewScrollRef.current;
     if (!textarea || !preview) return;
+
+    // Lock: preview is the active scroll source
+    scrollSource.current = "preview";
+    if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    scrollTimer.current = setTimeout(() => {
+      scrollSource.current = null;
+    }, 150);
 
     const elements = preview.querySelectorAll<HTMLElement>("[data-block-index]");
     if (elements.length === 0) return;
@@ -1555,13 +1579,10 @@ export function MainWindow({
       }
     }
 
-    const ratio = topDomIndex / (elements.length - 1 || 1);
-    const maxScroll = textarea.scrollHeight - textarea.clientHeight;
-    if (maxScroll <= 0) return;
+    const measurement = blockMeasurements.current[topDomIndex];
+    if (!measurement) return;
 
-    isScrollSyncing.current = true;
-    textarea.scrollTop = ratio * maxScroll;
-    isScrollSyncing.current = false;
+    textarea.scrollTop = measurement.offset;
   }, [viewMode]);
 
   const handlePinEntry = async () => {
