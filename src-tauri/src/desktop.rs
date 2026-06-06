@@ -1837,7 +1837,15 @@ fn parse_configured_shortcut(field: &str, value: &str) -> Result<Shortcut, Box<d
 
 #[cfg(desktop)]
 fn shortcut_bindings_from_config(config: &AppConfig) -> Result<ShortcutBindings, Box<dyn Error>> {
-    let open_notepad = parse_configured_shortcut("globalShortcut", &config.global_shortcut)?;
+    // 允许用户主动清空快捷键；空值表示不注册对应的全局快捷键。
+    let open_notepad = if config.global_shortcut.is_empty() {
+        None
+    } else {
+        Some(parse_configured_shortcut(
+            "globalShortcut",
+            &config.global_shortcut,
+        )?)
+    };
     let toggle_visibility = if config.toggle_visibility_shortcut.is_empty() {
         None
     } else {
@@ -1847,9 +1855,11 @@ fn shortcut_bindings_from_config(config: &AppConfig) -> Result<ShortcutBindings,
         )?)
     };
 
-    if toggle_visibility
+    // 只有两个快捷键都已设置时才需要检查重复，避免清空快捷键时误报配置冲突。
+    if open_notepad
         .as_ref()
-        .is_some_and(|shortcut| shortcut == &open_notepad)
+        .zip(toggle_visibility.as_ref())
+        .is_some_and(|(open_notepad, toggle_visibility)| open_notepad == toggle_visibility)
     {
         return Err(Box::new(AppError {
             code: "duplicateShortcut".into(),
@@ -1859,7 +1869,7 @@ fn shortcut_bindings_from_config(config: &AppConfig) -> Result<ShortcutBindings,
     }
 
     Ok(ShortcutBindings {
-        open_notepad: Some(open_notepad),
+        open_notepad,
         toggle_visibility,
     })
 }
@@ -2240,12 +2250,11 @@ mod tests {
     }
 
     #[cfg(desktop)]
-    #[test]
-    fn rejects_duplicate_shortcut_bindings() {
-        let config = AppConfig {
+    fn test_app_config(global_shortcut: &str, toggle_visibility_shortcut: &str) -> AppConfig {
+        AppConfig {
             locale: "zh-CN".into(),
             notes_dir: "D:\\notes".into(),
-            global_shortcut: "Ctrl+Shift+K".into(),
+            global_shortcut: global_shortcut.into(),
             close_to_tray: true,
             autostart: false,
             default_view_mode: "split".into(),
@@ -2272,8 +2281,14 @@ mod tests {
             open_at_cursor: true,
             surface_width: None,
             surface_height: None,
-            toggle_visibility_shortcut: "Ctrl+Shift+K".into(),
-        };
+            toggle_visibility_shortcut: toggle_visibility_shortcut.into(),
+        }
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn rejects_duplicate_shortcut_bindings() {
+        let config = test_app_config("Ctrl+Shift+K", "Ctrl+Shift+K");
 
         let error = match shortcut_bindings_from_config(&config) {
             Ok(_) => panic!("expected duplicate shortcut error"),
@@ -2281,6 +2296,29 @@ mod tests {
         };
 
         assert!(error.to_string().contains("must differ"));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn accepts_empty_shortcut_bindings() {
+        let config = test_app_config("", "");
+
+        let bindings = shortcut_bindings_from_config(&config).expect("empty shortcuts are valid");
+
+        assert!(bindings.open_notepad.is_none());
+        assert!(bindings.toggle_visibility.is_none());
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn accepts_visibility_shortcut_when_quick_note_shortcut_is_empty() {
+        let config = test_app_config("", "Ctrl+Shift+H");
+
+        let bindings =
+            shortcut_bindings_from_config(&config).expect("single visibility shortcut is valid");
+
+        assert!(bindings.open_notepad.is_none());
+        assert!(bindings.toggle_visibility.is_some());
     }
 
     #[test]
