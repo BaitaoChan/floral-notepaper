@@ -72,7 +72,7 @@ pub enum UpdateTaskKind {
     Install,
 }
 
-const DOWNLOAD_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const DOWNLOAD_RETENTION: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 const MAX_INSTALL_LOGS: usize = 20;
 
 impl UpdateTaskKind {
