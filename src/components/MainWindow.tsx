@@ -66,12 +66,7 @@ import {
   getNoteContextMenuItems,
   type NoteContextMenuAction,
 } from "../features/notes/noteContextMenu";
-import {
-  openNotepadWindow,
-  takeStartupFile,
-  takeStartupNote,
-  toggleTileWindow,
-} from "../features/windows/api";
+import { openNotepadWindow, takeStartupFile, toggleTileWindow } from "../features/windows/api";
 import {
   closeCurrentWindow,
   minimizeCurrentWindow,
@@ -625,13 +620,6 @@ export function MainWindow({
           const startupFile = await takeStartupFile();
           if (!cancelled && startupFile) {
             await loadExternalFile(startupFile);
-          }
-        }
-
-        if (!cancelled) {
-          const startupNoteId = await takeStartupNote();
-          if (!cancelled && startupNoteId) {
-            await loadNote(startupNoteId);
           }
         }
       } catch (error) {

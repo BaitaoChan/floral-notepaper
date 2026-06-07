@@ -430,9 +430,6 @@ const NOTEPAD_POOL_CAPACITY: usize = 2;
 /// previous approach of emitting an event after a hardcoded delay.
 static STARTUP_FILE: Mutex<Option<String>> = Mutex::new(None);
 
-static STARTUP_NOTE: Mutex<Option<String>> = Mutex::new(None);
-static GUI_LAUNCH_OPTIONS: Mutex<Option<crate::cli::GuiLaunchOptions>> = Mutex::new(None);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayMenuAction {
     ShowMain,
@@ -1116,40 +1113,6 @@ pub fn take_startup_file() -> Option<String> {
     STARTUP_FILE.lock().ok()?.take()
 }
 
-pub fn take_startup_note() -> Option<String> {
-    STARTUP_NOTE.lock().ok()?.take()
-}
-
-pub fn set_gui_launch_options(options: crate::cli::GuiLaunchOptions) {
-    if let Ok(mut guard) = GUI_LAUNCH_OPTIONS.lock() {
-        *guard = Some(options);
-    }
-}
-
-fn take_gui_launch_options() -> crate::cli::GuiLaunchOptions {
-    GUI_LAUNCH_OPTIONS
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take())
-        .unwrap_or_default()
-}
-
-pub fn handle_second_instance_args(app: &AppHandle, args: &[String]) {
-    let options = crate::cli::parse_second_instance_args(args);
-
-    if let Some(file_path) = options.file_path {
-        let _ = app.emit("open-external-file", file_path);
-    }
-    if let Some(note_id) = options.open_note_id {
-        let _ = app.emit("open-note", note_id);
-    }
-    if options.force_show || !options.silent {
-        if let Err(error) = show_main_window(app) {
-            eprintln!("failed to show main window for second instance: {error}");
-        }
-    }
-}
-
 pub fn setup_desktop(app: &mut App) -> Result<(), Box<dyn Error>> {
     app.manage(RuntimeState::default());
     app.manage(NotepadPool::default());
@@ -1166,21 +1129,16 @@ pub fn setup_desktop(app: &mut App) -> Result<(), Box<dyn Error>> {
     setup_tray(app)?;
     schedule_notepad_prewarm(app.handle());
 
-    let launch_options = take_gui_launch_options();
-    if launch_options.force_show || !launch_options.silent {
+    if !std::env::args().any(|a| a == "--silent") {
         if let Err(error) = show_main_window(app.handle()) {
             eprintln!("failed to show main window on startup: {error}");
         }
     }
 
-    if let Some(file_path) = launch_options.file_path {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(file_path) = extract_file_arg(&args) {
         if let Ok(mut guard) = STARTUP_FILE.lock() {
             *guard = Some(file_path);
-        }
-    }
-    if let Some(note_id) = launch_options.open_note_id {
-        if let Ok(mut guard) = STARTUP_NOTE.lock() {
-            *guard = Some(note_id);
         }
     }
 

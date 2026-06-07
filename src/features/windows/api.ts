@@ -29,7 +29,3 @@ export function openNoteInEditor(noteId: string): Promise<void> {
 export function takeStartupFile(): Promise<string | null> {
   return invoke("take_startup_file");
 }
-
-export function takeStartupNote(): Promise<string | null> {
-  return invoke("take_startup_note");
-}
