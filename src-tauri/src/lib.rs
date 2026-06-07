@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod desktop;
 pub mod json_io;
 pub mod locales;
@@ -302,6 +303,11 @@ fn take_startup_file() -> Option<String> {
     desktop::take_startup_file()
 }
 
+#[tauri::command]
+fn take_startup_note() -> Option<String> {
+    desktop::take_startup_note()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -309,10 +315,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(file_path) = desktop::extract_file_arg(&args) {
-                let _ = app.emit("open-external-file", file_path);
-            }
-            let _ = desktop::show_main_window(app);
+            desktop::handle_second_instance_args(app, &args);
         }))
         .setup(|app| {
             if let Ok(store) = default_store() {
@@ -373,7 +376,8 @@ pub fn run() {
             updater::commands::update_install,
             updater::commands::update_install_prepare_report,
             updater::commands::update_cancel,
-            take_startup_file
+            take_startup_file,
+            take_startup_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -95,6 +95,55 @@
 
 请参考 [CONTRIBUTING.md](CONTRIBUTING.md)
 
+## 命令行用法
+
+花笺支持通过命令行启动 GUI，也支持无界面的笔记管理子命令。
+
+### 启动 GUI
+
+```bash
+# 正常启动
+floral-notepaper
+
+# 静默启动（不显示主窗口，开机自启时使用）
+floral-notepaper --silent
+
+# 打开指定笔记
+floral-notepaper --open-note <note-id>
+
+# 打开外部 Markdown / 文本文件
+floral-notepaper path/to/note.md
+
+# 查看版本
+floral-notepaper --version
+```
+
+若应用已在运行，再次执行上述命令会激活已有实例并转发文件路径或 `--open-note` 参数。
+
+### 无界面子命令
+
+以下命令不启动 GUI，适合脚本自动化。可通过环境变量 `FLORAL_NOTEPAPER_DATA_DIR` 指定数据目录。
+
+```bash
+# 列出笔记
+floral-notepaper notes list
+floral-notepaper notes list --json
+
+# 查看 / 创建 / 删除笔记
+floral-notepaper notes get <id>
+floral-notepaper notes create --title "标题" --content "内容" --category "分类"
+floral-notepaper notes delete <id>
+
+# 导入 / 导出
+floral-notepaper notes import path/to/file.md --category "分类"
+floral-notepaper notes export <id> --output path/to/output.md
+
+# 列出分类
+floral-notepaper categories list
+```
+
+查看完整帮助：`floral-notepaper --help`
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Achilng/floral-notepaper&type=Date&legend=top-left)](https://star-history.com/#Achilng/floral-notepaper&Date)
