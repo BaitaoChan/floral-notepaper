@@ -15,8 +15,9 @@ const API_URL = `https://api.github.com/repos/${REPO}/contributors?per_page=100`
 
 async function fetchContributors() {
   const headers = { "User-Agent": "floral-notepaper-build" };
-  if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
   const res = await fetch(API_URL, { headers });
