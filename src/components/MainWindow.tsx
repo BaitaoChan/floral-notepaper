@@ -366,6 +366,15 @@ export function MainWindow({
   contentValueRef.current = content;
   const titleValueRef = useRef(title);
   titleValueRef.current = title;
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+  const externalFilesRef = useRef(externalFiles);
+  externalFilesRef.current = externalFiles;
+  // 每次"应用/切换当前笔记"都会自增；异步加载完成后若 epoch 已变化，说明用户
+  // 已切换到别处，该次结果直接丢弃，避免旧的加载结果覆盖新选中的笔记
+  const loadEpochRef = useRef(0);
+  // 串行化所有保存请求，避免自动保存与切换触发的保存并发写同一篇笔记
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
   const selectedNote = useMemo(
     () => notes.find((note) => note.id === selectedId) ?? null,
@@ -522,6 +531,12 @@ export function MainWindow({
   const charCount = useMemo(() => countNoteChars(content), [content]);
 
   const applyNote = useCallback((note: Note) => {
+    // 立刻同步各 ref，保证保存快照与守卫在下一次渲染前就能读到最新值
+    loadEpochRef.current += 1;
+    selectedIdRef.current = note.id;
+    titleValueRef.current = note.title;
+    contentValueRef.current = note.content;
+    saveStateRef.current = "saved";
     setSelectedId(note.id);
     setTitle(note.title);
     setContent(note.content);
@@ -542,7 +557,10 @@ export function MainWindow({
 
   const loadNote = useCallback(
     async (id: string) => {
+      const epoch = ++loadEpochRef.current;
       const note = await getNote(id);
+      // 加载期间用户又切换/加载了别的笔记，丢弃本次结果
+      if (loadEpochRef.current !== epoch) return;
       applyNote(note);
       replaceNoteMetadata(note);
     },
@@ -557,6 +575,11 @@ export function MainWindow({
   }, []);
 
   const clearCurrentNote = useCallback(() => {
+    loadEpochRef.current += 1;
+    selectedIdRef.current = null;
+    titleValueRef.current = "";
+    contentValueRef.current = "";
+    saveStateRef.current = "idle";
     setSelectedId(null);
     setTitle("");
     setContent("");
@@ -564,6 +587,7 @@ export function MainWindow({
   }, []);
 
   const loadExternalFile = useCallback(async (filePath: string) => {
+    const epoch = ++loadEpochRef.current;
     try {
       const [fileContent, mtime] = await Promise.all([
         readExternalFile(filePath),
@@ -586,6 +610,11 @@ export function MainWindow({
         ];
       });
 
+      if (loadEpochRef.current !== epoch) return;
+      selectedIdRef.current = filePath;
+      titleValueRef.current = displayTitle;
+      contentValueRef.current = fileContent;
+      saveStateRef.current = "saved";
       setSelectedId(filePath);
       setTitle(displayTitle);
       setContent(fileContent);
@@ -778,30 +807,43 @@ export function MainWindow({
 
   useEffect(() => {
     const unlisten = listen("notes-changed", () => {
-      void refreshNotes().then((loaded) => {
-        const currentId = selectedIdRef.current;
-        if (!currentId) return;
-        const stillExists = loaded.some((n) => n.id === currentId);
-        if (stillExists) {
-          if (saveStateRef.current !== "dirty") {
-            void getNote(currentId)
-              .then((note) => {
-                if (selectedIdRef.current !== currentId) return;
-                if (saveStateRef.current === "dirty") return;
-                setTitle(note.title);
-                setContent(note.content);
-                setSaveState("saved");
-              })
-              .catch(() => undefined);
+      // 记录事件到达时的 epoch；其间用户一旦切换/加载了笔记，本次同步即过期，
+      // 不再用过期的列表快照去改选中或回填内容，避免把选中"拉回"刚保存的旧笔记
+      const epochAtEvent = loadEpochRef.current;
+      const isStale = () => loadEpochRef.current !== epochAtEvent;
+      void refreshNotes()
+        .then((loaded) => {
+          if (isStale()) return;
+          const currentId = selectedIdRef.current;
+          if (!currentId) return;
+          const stillExists = loaded.some((n) => n.id === currentId);
+          if (stillExists) {
+            if (saveStateRef.current !== "dirty" && saveStateRef.current !== "saving") {
+              void getNote(currentId)
+                .then((note) => {
+                  if (isStale()) return;
+                  if (selectedIdRef.current !== currentId) return;
+                  if (saveStateRef.current === "dirty" || saveStateRef.current === "saving") {
+                    return;
+                  }
+                  titleValueRef.current = note.title;
+                  contentValueRef.current = note.content;
+                  saveStateRef.current = "saved";
+                  setTitle(note.title);
+                  setContent(note.content);
+                  setSaveState("saved");
+                })
+                .catch(() => undefined);
+            }
+          } else if (selectedNoteRef.current) {
+            if (loaded[0]) {
+              void loadNote(loaded[0].id);
+            } else {
+              clearCurrentNote();
+            }
           }
-        } else if (selectedNoteRef.current) {
-          if (loaded[0]) {
-            void loadNote(loaded[0].id);
-          } else {
-            clearCurrentNote();
-          }
-        }
-      });
+        })
+        .catch(() => undefined);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -858,6 +900,7 @@ export function MainWindow({
             const rels = await Promise.all(imagePaths.map((p) => saveImageFromPath(noteId, p)));
             const markdown = rels.map((rel) => `![](${rel})`).join("\n");
             insertTextAtCursor(textarea, setContent, markdown);
+            saveStateRef.current = "dirty";
             setSaveState("dirty");
           } catch (error) {
             showToast(getErrorMessage(error));
@@ -923,9 +966,13 @@ export function MainWindow({
       if (Date.now() - lastExternalSaveRef.current < 2000) return;
       try {
         const mtime = await getFileModifiedTime(selectedExternalFile.filePath);
+        if (selectedIdRef.current !== selectedExternalFile.id) return;
         if (mtime !== externalFileMtimeRef.current) {
           externalFileMtimeRef.current = mtime;
           const fileContent = await readExternalFile(selectedExternalFile.filePath);
+          if (selectedIdRef.current !== selectedExternalFile.id) return;
+          contentValueRef.current = fileContent;
+          saveStateRef.current = "saved";
           setContent(fileContent);
           setSaveState("saved");
         }
@@ -993,57 +1040,71 @@ export function MainWindow({
     (document.activeElement as HTMLElement | null)?.blur();
   }, []);
 
-  const saveCurrentNote = useCallback(async () => {
-    if (!selectedId) return null;
+  const performSave = useCallback(
+    async (force: boolean): Promise<boolean> => {
+      // 非强制保存（自动保存、切换前保存）在没有未保存修改时直接视为成功
+      if (!force && saveStateRef.current !== "dirty") return true;
+      const id = selectedIdRef.current;
+      if (!id) return false;
 
-    if (isExternal && selectedExternalFile) {
-      setSaveState("saving");
+      // 在保存瞬间对当前笔记做快照；之后用户切换笔记不影响本次写入的内容，
+      // 保存完成后也只在"仍停留在这篇笔记"时才更新保存状态
+      const titleSnapshot = titleValueRef.current;
+      const contentSnapshot = contentValueRef.current;
+      const stillCurrent = () => selectedIdRef.current === id;
+      const settleSaveState = (state: SaveState) => {
+        if (!stillCurrent()) return;
+        saveStateRef.current = state;
+        setSaveState(state);
+      };
+
+      const externalFile = externalFilesRef.current.find((file) => file.id === id) ?? null;
+
+      settleSaveState("saving");
       try {
-        await saveExternalFile(selectedExternalFile.filePath, content);
-        lastExternalSaveRef.current = Date.now();
-        const mtime = await getFileModifiedTime(selectedExternalFile.filePath);
-        externalFileMtimeRef.current = mtime;
-        setSaveState(contentValueRef.current === content ? "saved" : "dirty");
-        return { id: selectedId, title, content } as Note;
+        if (externalFile) {
+          await saveExternalFile(externalFile.filePath, contentSnapshot);
+          lastExternalSaveRef.current = Date.now();
+          const mtime = await getFileModifiedTime(externalFile.filePath);
+          if (stillCurrent()) {
+            externalFileMtimeRef.current = mtime;
+          }
+          settleSaveState(contentValueRef.current === contentSnapshot ? "saved" : "dirty");
+        } else {
+          const category = notesRef.current.find((note) => note.id === id)?.category ?? "";
+          const note = await updateNote(id, {
+            title: titleSnapshot,
+            content: contentSnapshot,
+            category,
+          });
+          replaceNoteMetadata(note);
+          const contentChanged =
+            contentValueRef.current !== contentSnapshot || titleValueRef.current !== titleSnapshot;
+          settleSaveState(contentChanged ? "dirty" : "saved");
+        }
+        return true;
       } catch (error) {
-        setSaveState("error");
+        settleSaveState("error");
         showToast(getErrorMessage(error));
-        return null;
+        return false;
       }
-    }
+    },
+    [replaceNoteMetadata],
+  );
 
-    setSaveState("saving");
-    try {
-      const category = selectedNote?.category ?? "";
-      const note = await updateNote(selectedId, { title, content, category });
-      replaceNoteMetadata(note);
-      const contentChanged = contentValueRef.current !== content || titleValueRef.current !== title;
-      setSaveState(contentChanged ? "dirty" : "saved");
-      return note;
-    } catch (error) {
-      setSaveState("error");
-      showToast(getErrorMessage(error));
-      return null;
-    }
-  }, [
-    content,
-    isExternal,
-    replaceNoteMetadata,
-    selectedExternalFile,
-    selectedId,
-    selectedNote,
-    title,
-  ]);
+  const saveCurrentNote = useCallback(
+    (force = false): Promise<boolean> => {
+      const run = saveQueueRef.current.then(() => performSave(force));
+      saveQueueRef.current = run.catch(() => undefined);
+      return run;
+    },
+    [performSave],
+  );
 
   useEffect(() => {
     const unlisten = listen<UpdateInstallPrepareRequest>("update://prepare-install", (event) => {
       const respond = async () => {
         const windowLabel = windowLabelRef.current;
-        if (saveStateRef.current !== "dirty") {
-          await reportInstallPreparation(event.payload.requestId, windowLabel, "ready");
-          return;
-        }
-
         const saved = await saveCurrentNote();
         await reportInstallPreparation(
           event.payload.requestId,
@@ -1079,7 +1140,7 @@ export function MainWindow({
     function handleKeyDown(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && event.key === "s") {
         event.preventDefault();
-        void saveCurrentNote();
+        void saveCurrentNote(true);
       }
     }
 
@@ -1101,6 +1162,9 @@ export function MainWindow({
 
     return () => window.clearTimeout(timer);
   }, [
+    // content 与 title 用于在持续输入时不断重置防抖计时器
+    content,
+    title,
     isExternal,
     saveCurrentNote,
     saveState,
@@ -1110,9 +1174,7 @@ export function MainWindow({
   ]);
 
   const handleNewNote = async () => {
-    if (saveState === "dirty") {
-      await saveCurrentNote();
-    }
+    await saveCurrentNote();
     try {
       const note = await createNote({ title: "", content: "", category: activeCategory });
       replaceNoteMetadata(note);
@@ -1225,10 +1287,8 @@ export function MainWindow({
 
   const handleImportNote = async () => {
     try {
-      if (selectedId && saveState === "dirty") {
-        const saved = await saveCurrentNote();
-        if (!saved) return;
-      }
+      const saved = await saveCurrentNote();
+      if (!saved) return;
 
       const note = await importMarkdownNote(activeCategory);
       if (!note) return;
@@ -1243,9 +1303,8 @@ export function MainWindow({
   const handleSelectNote = async (id: string) => {
     if (id === selectedId) return;
     setDeleteConfirm(false);
-    if (saveState === "dirty") {
-      await saveCurrentNote();
-    }
+    // 排队保存：等待可能在途的自动保存，并把尚未落盘的修改一并存掉
+    await saveCurrentNote();
 
     setIsLoading(true);
     try {
@@ -1260,19 +1319,23 @@ export function MainWindow({
   const handleSelectExternalFile = async (id: string) => {
     if (id === selectedId) return;
     setDeleteConfirm(false);
-    if (saveState === "dirty") {
-      await saveCurrentNote();
-    }
+    await saveCurrentNote();
 
     const file = externalFiles.find((f) => f.id === id);
     if (!file) return;
 
     setIsLoading(true);
+    const epoch = ++loadEpochRef.current;
     try {
       const [fileContent, mtime] = await Promise.all([
         readExternalFile(file.filePath),
         getFileModifiedTime(file.filePath),
       ]);
+      if (loadEpochRef.current !== epoch) return;
+      selectedIdRef.current = id;
+      titleValueRef.current = file.title;
+      contentValueRef.current = fileContent;
+      saveStateRef.current = "saved";
       setSelectedId(id);
       setTitle(file.title);
       setContent(fileContent);
@@ -1342,7 +1405,7 @@ export function MainWindow({
 
   const handleExportNote = async (note: NoteMetadata) => {
     try {
-      if (note.id === selectedId && saveState === "dirty") {
+      if (note.id === selectedId) {
         const saved = await saveCurrentNote();
         if (!saved) return;
       }
@@ -1443,7 +1506,9 @@ export function MainWindow({
   };
 
   const markDirty = () => {
-    if (selectedId) setSaveState("dirty");
+    if (!selectedId) return;
+    saveStateRef.current = "dirty";
+    setSaveState("dirty");
   };
 
   const ensureNoteSaved = useCallback(async (): Promise<string | null> => {
@@ -1581,7 +1646,7 @@ export function MainWindow({
   const handlePinEntry = async () => {
     if (!selectedId) return;
     const isPinned = pinnedTileIds.has(selectedId);
-    if (!isPinned && saveState === "dirty") {
+    if (!isPinned) {
       await saveCurrentNote();
     }
     try {
@@ -2454,7 +2519,7 @@ export function MainWindow({
                 </button>
 
                 <button
-                  onClick={() => void saveCurrentNote()}
+                  onClick={() => void saveCurrentNote(true)}
                   disabled={!selectedId || saveState === "saving"}
                   className="px-2.5 h-7 flex items-center justify-center rounded-lg text-[11px] text-ink-ghost hover:text-ink-faint hover:bg-paper-warm transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                   title={t("common.save", { defaultValue: "保存" })}
